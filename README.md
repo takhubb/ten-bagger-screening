@@ -267,3 +267,5 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python screen_small_caps.py
+
+./.venv/bin/python screen_small_caps.py --from-date 2026-01-01 --to-date 2026-04-18

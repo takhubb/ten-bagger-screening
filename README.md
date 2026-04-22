@@ -2,10 +2,10 @@
 
 `screen_small_caps.py` は J-Quants API を使って、次の条件に合う銘柄を抽出するためのスクリーニングツールです。
 
-- プライム / スタンダード / グロース市場の銘柄
+- プライム / スタンダード市場の銘柄（グロース市場を除く）
 - 直近終値が過去52週高値を更新
 - 直近出来高が、当日を除く20営業日平均出来高の2倍以上
-- 時価総額が 200 億円以下
+- 時価総額が 100 億円以下
 - 自己資本比率が 20% 以上
 
 未指定時は「今日」を基準日にし、休場日であれば直近営業日にさかのぼって実行します。
@@ -268,4 +268,4 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python screen_small_caps.py
 
-./.venv/bin/python screen_small_caps.py --from-date 2026-01-01 --to-date 2026-04-18
+./.venv/bin/python screen_small_caps.py --from-date 2026-01-01 --to-date 2026-04-22

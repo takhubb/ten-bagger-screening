@@ -23,7 +23,7 @@ except ImportError as exc:  # pragma: no cover
 DEFAULT_LOOKBACK_DAYS = 180
 DEFAULT_BACKTRACK_DAYS = 10
 DEFAULT_LIMIT = 20
-DEFAULT_MAX_MARKET_CAP_OKU = 200.0
+DEFAULT_MAX_MARKET_CAP_OKU = 100.0
 DEFAULT_RATE_LIMIT_WAIT_SECONDS = 70.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_LOOKBACK_DAYS = 450
@@ -36,8 +36,9 @@ DEFAULT_WEEKLY_HISTORY_BUFFER_DAYS = 400
 DEFAULT_FINANCIAL_HISTORY_DAYS = 800
 DEFAULT_HIGH_PROXIMITY_RATIO = 1.0
 DEFAULT_MIN_EQUITY_RATIO = 0.20
-TARGET_MARKET_NAMES = {"プライム", "スタンダード", "グロース"}
-TARGET_MARKET_CODES = {"0111", "0112", "0113"}
+DEFAULT_MAX_PBR = 1.0
+TARGET_MARKET_NAMES = {"プライム", "スタンダード"}
+TARGET_MARKET_CODES = {"0111", "0112"}
 QUARTER_ORDER_MAP = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4, "FY": 4}
 
 
@@ -59,6 +60,7 @@ class ScreeningRunResult:
     market_cap_codes: int
     weekly_codes: int
     volume_codes: int
+    pbr_codes: int
     equity_ratio_codes: int
     screened: pd.DataFrame
     csv_path: Path
@@ -86,7 +88,7 @@ def load_dotenv(dotenv_path: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="J-Quants API を用いて52週高値更新、20日平均出来高2倍以上、時価総額200億円以下、自己資本比率20%以上の銘柄を抽出します。"
+        description="J-Quants API を用いて52週高値更新、20日平均出来高2倍以上、時価総額100億円以下、PBR1倍以下、自己資本比率20%以上の銘柄を抽出します。"
     )
     parser.add_argument(
         "--date",
@@ -94,7 +96,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help=(
             "基準日。yyyy-MM-dd 形式。複数指定可、カンマ区切り可。"
-            " 休場日の場合は直近の営業日にさかのぼります。"
+            " 明示指定した日付が非営業日の場合はスキップします。"
             " 例: --date 2026-03-31 --date 2026-04-01,2026-04-02"
         ),
     )
@@ -110,7 +112,7 @@ def parse_args() -> argparse.Namespace:
         "--max-market-cap-oku",
         type=float,
         default=DEFAULT_MAX_MARKET_CAP_OKU,
-        help="上限時価総額（億円）。デフォルトは 200。",
+        help="上限時価総額（億円）。デフォルトは 100。",
     )
     parser.add_argument(
         "--lookback-days",
@@ -122,7 +124,7 @@ def parse_args() -> argparse.Namespace:
         "--backtrack-days",
         type=int,
         default=DEFAULT_BACKTRACK_DAYS,
-        help="価格データを営業日に寄せるために遡る最大日数。デフォルトは 10。",
+        help="日付未指定時に価格データを直近営業日に寄せるために遡る最大日数。デフォルトは 10。",
     )
     parser.add_argument(
         "--limit",
@@ -196,6 +198,7 @@ def parse_args() -> argparse.Namespace:
         help="四半期業績指標の算出に使う財務サマリーの遡及日数。デフォルトは 800。",
     )
     args = parser.parse_args()
+    args.use_latest_trading_day = not bool(args.dates or args.from_date or args.to_date)
     args.requested_dates = resolve_requested_dates(args, parser)
     return args
 
@@ -301,6 +304,25 @@ def find_latest_price_snapshot(
     raise RuntimeError(
         f"{target_date.isoformat()} から {backtrack_days} 日さかのぼっても価格データを取得できませんでした。"
     )
+
+
+def find_price_snapshot_for_date(
+    cli: jquantsapi.ClientV2,
+    target_date: date,
+    cache_dir: Path,
+    retry_wait_seconds: float,
+    max_retries: int,
+) -> PriceSnapshot | None:
+    df = fetch_daily_prices_for_date(
+        cli=cli,
+        current=target_date,
+        cache_dir=cache_dir,
+        retry_wait_seconds=retry_wait_seconds,
+        max_retries=max_retries,
+    )
+    if df.empty:
+        return None
+    return PriceSnapshot(trading_date=target_date, prices=df)
 
 
 def daterange(start_date: date, end_date: date):
@@ -1096,15 +1118,31 @@ def build_equity_ratio_screening_table(
     return filtered.sort_values("Code").reset_index(drop=True)
 
 
+def build_pbr_screening_table(
+    valuation_df: pd.DataFrame,
+    max_pbr: float,
+) -> pd.DataFrame:
+    if valuation_df.empty:
+        return pd.DataFrame(columns=["Code"])
+
+    filtered = valuation_df.loc[:, ["Code", "PBR"]].copy()
+    filtered["Code"] = filtered["Code"].astype(str)
+    filtered["PBR"] = pd.to_numeric(filtered["PBR"], errors="coerce")
+    filtered = filtered[filtered["PBR"].notna() & (filtered["PBR"] <= max_pbr)].copy()
+    return filtered.loc[:, ["Code"]].sort_values("Code").reset_index(drop=True)
+
+
 def build_screening_table(
     market_cap_df: pd.DataFrame,
     weekly_df: pd.DataFrame,
     volume_screen_df: pd.DataFrame,
+    pbr_screen_df: pd.DataFrame,
     equity_ratio_df: pd.DataFrame,
     trading_date: date,
 ) -> pd.DataFrame:
     merged = market_cap_df.merge(weekly_df, on="Code", how="inner")
     merged = merged.merge(volume_screen_df, on="Code", how="inner")
+    merged = merged.merge(pbr_screen_df, on="Code", how="inner")
     merged = merged.merge(equity_ratio_df, on="Code", how="inner")
     merged["BaseDate"] = pd.Timestamp(trading_date)
 
@@ -1302,15 +1340,31 @@ def run_screening_for_date(
     max_market_cap_yen: float,
     price_cache_dir: Path,
     multiple_targets: bool,
-) -> ScreeningRunResult:
-    snapshot = find_latest_price_snapshot(
-        cli=cli,
-        target_date=requested_date,
-        backtrack_days=args.backtrack_days,
-        cache_dir=price_cache_dir,
-        retry_wait_seconds=args.retry_wait_seconds,
-        max_retries=args.max_retries,
-    )
+) -> ScreeningRunResult | None:
+    if args.use_latest_trading_day:
+        snapshot = find_latest_price_snapshot(
+            cli=cli,
+            target_date=requested_date,
+            backtrack_days=args.backtrack_days,
+            cache_dir=price_cache_dir,
+            retry_wait_seconds=args.retry_wait_seconds,
+            max_retries=args.max_retries,
+        )
+    else:
+        snapshot = find_price_snapshot_for_date(
+            cli=cli,
+            target_date=requested_date,
+            cache_dir=price_cache_dir,
+            retry_wait_seconds=args.retry_wait_seconds,
+            max_retries=args.max_retries,
+        )
+        if snapshot is None:
+            print(
+                f"[info] 指定日 {requested_date.isoformat()} は非営業日のためスキップしました。",
+                file=sys.stderr,
+            )
+            return None
+
     if requested_date == snapshot.trading_date:
         print(
             f"[info] 価格基準日: {snapshot.trading_date.isoformat()}",
@@ -1318,8 +1372,8 @@ def run_screening_for_date(
         )
     else:
         print(
-            f"[info] 指定日 {requested_date.isoformat()} は休場日のため、"
-            f"価格基準日を {snapshot.trading_date.isoformat()} に補正しました。",
+            f"[info] {requested_date.isoformat()} 時点の価格データがないため、"
+            f"最新営業日 {snapshot.trading_date.isoformat()} を使用します。",
             file=sys.stderr,
         )
 
@@ -1329,7 +1383,7 @@ def run_screening_for_date(
     master_df = filter_target_markets(master_df)
     if master_df.empty:
         raise RuntimeError(
-            "対象市場（プライム / スタンダード / グロース）の銘柄を取得できませんでした。"
+            "対象市場（プライム / スタンダード）の銘柄を取得できませんでした。"
         )
 
     listed_count = master_df["Code"].nunique()
@@ -1433,6 +1487,10 @@ def run_screening_for_date(
         fin_summary_df=financial_fin_summary_df,
         prices_df=snapshot.prices,
     )
+    pbr_screen_df = build_pbr_screening_table(
+        valuation_df=valuation_df,
+        max_pbr=DEFAULT_MAX_PBR,
+    )
     industry_valuation_df = build_industry_valuation_average_table(
         master_df=master_df,
         valuation_df=valuation_df,
@@ -1474,6 +1532,7 @@ def run_screening_for_date(
             market_cap_df=market_cap_df,
             weekly_df=weekly_df,
             volume_screen_df=volume_screen_df,
+            pbr_screen_df=pbr_screen_df,
             equity_ratio_df=equity_ratio_df,
             trading_date=snapshot.trading_date,
         )
@@ -1491,6 +1550,7 @@ def run_screening_for_date(
     market_cap_codes = market_cap_df["Code"].nunique() if not market_cap_df.empty else 0
     weekly_codes = weekly_df["Code"].nunique() if not weekly_df.empty else 0
     volume_codes = volume_screen_df["Code"].nunique() if not volume_screen_df.empty else 0
+    pbr_codes = pbr_screen_df["Code"].nunique() if not pbr_screen_df.empty else 0
     equity_ratio_codes = equity_ratio_df["Code"].nunique() if not equity_ratio_df.empty else 0
     csv_path = build_output_csv_path(
         requested_date=requested_date,
@@ -1510,6 +1570,7 @@ def run_screening_for_date(
         market_cap_codes=market_cap_codes,
         weekly_codes=weekly_codes,
         volume_codes=volume_codes,
+        pbr_codes=pbr_codes,
         equity_ratio_codes=equity_ratio_codes,
         screened=screened,
         csv_path=csv_path,
@@ -1528,16 +1589,17 @@ def print_screening_run(
     if multiple_targets:
         print("=" * 80)
         print(f"指定日: {result.requested_date.isoformat()}")
-    print("スクリーニング1: プライム / スタンダード / グロース")
+    print("スクリーニング1: プライム / スタンダード（グロース除く）")
     print("補足: ETF / ETN / REIT / 投資法人などは名称ベースで除外")
     print(f"スクリーニング2: 直近終値 > 過去{weekly_lookback_weeks}週高値")
     print("スクリーニング3: 直近出来高÷当日除く20営業日平均 >= 2")
     print(f"スクリーニング4: 時価総額 {max_market_cap_oku:.1f} 億円以下")
-    print("スクリーニング5: 自己資本比率 20%以上")
+    print(f"スクリーニング5: PBR {DEFAULT_MAX_PBR:.1f} 倍以下")
+    print("スクリーニング6: 自己資本比率 20%以上")
     print(f"価格基準日: {result.snapshot.trading_date.isoformat()}")
     if result.requested_date != result.snapshot.trading_date:
         print(
-            f"補足: 指定日 {result.requested_date.isoformat()} は休場日のため、"
+            f"補足: {result.requested_date.isoformat()} 時点の価格データがないため、"
             f"直近営業日 {result.snapshot.trading_date.isoformat()} を使用"
         )
     print("注意: 時価総額は終値 × 財務サマリーの最新 ShOutFY で近似しています。")
@@ -1557,6 +1619,7 @@ def print_screening_run(
     print(f"52週高値更新: {result.weekly_codes}")
     print(f"出来高条件(20日): {result.volume_codes}")
     print(f"時価総額: {result.market_cap_codes}")
+    print(f"PBR: {result.pbr_codes}")
     print(f"自己資本比率: {result.equity_ratio_codes}")
     print(f"最終一致: {covered_codes}")
     print(f"CSV出力: {result.csv_path}")
@@ -1582,6 +1645,7 @@ def main() -> int:
     price_cache_dir = Path(".cache/jquants_eq_daily")
     multiple_targets = len(args.requested_dates) > 1
     exit_code = 0
+    printed_results = 0
 
     for index, requested_date in enumerate(args.requested_dates, start=1):
         if multiple_targets:
@@ -1619,7 +1683,10 @@ def main() -> int:
             exit_code = 1
             continue
 
-        if multiple_targets and index > 1:
+        if result is None:
+            continue
+
+        if multiple_targets and printed_results > 0:
             print()
         print_screening_run(
             result,
@@ -1628,6 +1695,7 @@ def main() -> int:
             max_market_cap_oku=args.max_market_cap_oku,
             multiple_targets=multiple_targets,
         )
+        printed_results += 1
 
     return exit_code
 

@@ -37,6 +37,8 @@ DEFAULT_FINANCIAL_HISTORY_DAYS = 800
 DEFAULT_HIGH_PROXIMITY_RATIO = 1.0
 DEFAULT_MIN_EQUITY_RATIO = 0.20
 DEFAULT_MAX_PBR = 1.0
+DEFAULT_MIN_CURRENT_SALES_GROWTH_YOY = 0.10
+DEFAULT_MIN_CURRENT_OP_GROWTH_YOY = 0.10
 TARGET_MARKET_NAMES = {"プライム", "スタンダード"}
 TARGET_MARKET_CODES = {"0111", "0112"}
 QUARTER_ORDER_MAP = {"1Q": 1, "2Q": 2, "3Q": 3, "4Q": 4, "FY": 4}
@@ -62,6 +64,8 @@ class ScreeningRunResult:
     volume_codes: int
     pbr_codes: int
     equity_ratio_codes: int
+    sales_growth_codes: int
+    op_growth_codes: int
     screened: pd.DataFrame
     csv_path: Path
 
@@ -88,7 +92,13 @@ def load_dotenv(dotenv_path: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="J-Quants API を用いて52週高値更新、20日平均出来高2倍以上、時価総額100億円以下、PBR1倍以下、自己資本比率20%以上の銘柄を抽出します。"
+        description=(
+            "J-Quants API を用いて、プライム / スタンダード市場、"
+            "52週高値更新、20日平均出来高2倍以上、PBR1倍以下、"
+            "時価総額100億円以下、自己資本比率20%以上、"
+            "直近四半期売上成長率10%以上、直近四半期営業利益成長率10%以上"
+            "の銘柄を抽出します。"
+        )
     )
     parser.add_argument(
         "--date",
@@ -702,34 +712,22 @@ def financial_statement_priority(doc_type: str) -> int:
 
 
 def build_financial_metrics_table(fin_summary_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Code",
+        "SalesGrowthYoYCurrent",
+        "SalesGrowthYoYPrev1",
+        "SalesGrowthYoYPrev2",
+        "OpGrowthYoYCurrent",
+        "OpGrowthYoYPrev1",
+        "OpGrowthYoYPrev2",
+        "EquityRatio",
+    ]
     if fin_summary_df.empty:
-        return pd.DataFrame(
-            columns=[
-                "Code",
-                "SalesGrowthYoYCurrent",
-                "SalesGrowthYoYPrev1",
-                "SalesGrowthYoYPrev2",
-                "OpMarginCurrent",
-                "OpMarginPrev1",
-                "OpMarginPrev2",
-                "EquityRatio",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
     required = {"Code", "DocType", "CurPerType", "CurPerEn", "CurFYEn", "Sales", "OP", "EqAR"}
     if not required.issubset(fin_summary_df.columns):
-        return pd.DataFrame(
-            columns=[
-                "Code",
-                "SalesGrowthYoYCurrent",
-                "SalesGrowthYoYPrev1",
-                "SalesGrowthYoYPrev2",
-                "OpMarginCurrent",
-                "OpMarginPrev1",
-                "OpMarginPrev2",
-                "EquityRatio",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
     statements = fin_summary_df.copy()
     statements["Code"] = statements["Code"].astype(str)
@@ -738,18 +736,7 @@ def build_financial_metrics_table(fin_summary_df: pd.DataFrame) -> pd.DataFrame:
     statements["CurPerType"] = statements["CurPerType"].fillna("").astype(str)
     statements = statements[statements["CurPerType"].isin(QUARTER_ORDER_MAP)].copy()
     if statements.empty:
-        return pd.DataFrame(
-            columns=[
-                "Code",
-                "SalesGrowthYoYCurrent",
-                "SalesGrowthYoYPrev1",
-                "SalesGrowthYoYPrev2",
-                "OpMarginCurrent",
-                "OpMarginPrev1",
-                "OpMarginPrev2",
-                "EquityRatio",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
     statements["Sales"] = pd.to_numeric(statements["Sales"], errors="coerce")
     statements["OP"] = pd.to_numeric(statements["OP"], errors="coerce")
@@ -762,18 +749,7 @@ def build_financial_metrics_table(fin_summary_df: pd.DataFrame) -> pd.DataFrame:
     statements["StatementPriority"] = statements["DocType"].map(financial_statement_priority)
     statements = statements.dropna(subset=["Code", "CurPerEn", "CurFYEn", "QuarterOrder", "Sales", "OP"])
     if statements.empty:
-        return pd.DataFrame(
-            columns=[
-                "Code",
-                "SalesGrowthYoYCurrent",
-                "SalesGrowthYoYPrev1",
-                "SalesGrowthYoYPrev2",
-                "OpMarginCurrent",
-                "OpMarginPrev1",
-                "OpMarginPrev2",
-                "EquityRatio",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
     statements = statements.sort_values(
         ["Code", "CurFYEn", "QuarterOrder", "StatementPriority", "DiscDate", "DiscTime"],
@@ -819,32 +795,24 @@ def build_financial_metrics_table(fin_summary_df: pd.DataFrame) -> pd.DataFrame:
     quarterly["StandaloneOP"] = pd.to_numeric(quarterly["StandaloneOP"], errors="coerce")
     quarterly = quarterly.dropna(subset=["StandaloneSales", "StandaloneOP", "CurPerEn", "CurFYEn"])
     if quarterly.empty:
-        return pd.DataFrame(
-            columns=[
-                "Code",
-                "SalesGrowthYoYCurrent",
-                "SalesGrowthYoYPrev1",
-                "SalesGrowthYoYPrev2",
-                "OpMarginCurrent",
-                "OpMarginPrev1",
-                "OpMarginPrev2",
-                "EquityRatio",
-            ]
-        )
+        return pd.DataFrame(columns=columns)
 
     quarterly = quarterly.sort_values(["Code", "QuarterOrder", "CurFYEn", "CurPerEn"]).reset_index(drop=True)
     quarterly["PrevYearStandaloneSales"] = quarterly.groupby(["Code", "QuarterOrder"])["StandaloneSales"].shift(1)
+    quarterly["PrevYearStandaloneOP"] = quarterly.groupby(["Code", "QuarterOrder"])["StandaloneOP"].shift(1)
     quarterly["SalesGrowthYoY"] = pd.NA
-    valid_prev_sales = quarterly["PrevYearStandaloneSales"].notna() & (quarterly["PrevYearStandaloneSales"] != 0)
+    valid_prev_sales = quarterly["PrevYearStandaloneSales"].notna() & (quarterly["PrevYearStandaloneSales"] > 0)
     quarterly.loc[valid_prev_sales, "SalesGrowthYoY"] = (
         quarterly.loc[valid_prev_sales, "StandaloneSales"]
         / quarterly.loc[valid_prev_sales, "PrevYearStandaloneSales"]
         - 1.0
     )
-    quarterly["OpMargin"] = pd.NA
-    valid_sales = quarterly["StandaloneSales"].notna() & (quarterly["StandaloneSales"] != 0)
-    quarterly.loc[valid_sales, "OpMargin"] = (
-        quarterly.loc[valid_sales, "StandaloneOP"] / quarterly.loc[valid_sales, "StandaloneSales"]
+    quarterly["OpGrowthYoY"] = pd.NA
+    valid_prev_op = quarterly["PrevYearStandaloneOP"].notna() & (quarterly["PrevYearStandaloneOP"] > 0)
+    quarterly.loc[valid_prev_op, "OpGrowthYoY"] = (
+        quarterly.loc[valid_prev_op, "StandaloneOP"]
+        / quarterly.loc[valid_prev_op, "PrevYearStandaloneOP"]
+        - 1.0
     )
 
     metrics_rows: list[dict[str, object]] = []
@@ -854,23 +822,26 @@ def build_financial_metrics_table(fin_summary_df: pd.DataFrame) -> pd.DataFrame:
         row: dict[str, object] = {"Code": code}
 
         suffix_map = {
-            0: ("SalesGrowthYoYCurrent", "OpMarginCurrent"),
-            1: ("SalesGrowthYoYPrev1", "OpMarginPrev1"),
-            2: ("SalesGrowthYoYPrev2", "OpMarginPrev2"),
+            0: ("SalesGrowthYoYCurrent", "OpGrowthYoYCurrent"),
+            1: ("SalesGrowthYoYPrev1", "OpGrowthYoYPrev1"),
+            2: ("SalesGrowthYoYPrev2", "OpGrowthYoYPrev2"),
         }
         for index, metric_names in suffix_map.items():
-            sales_key, margin_key = metric_names
+            sales_key, op_key = metric_names
             if index < len(latest_three):
                 row[sales_key] = latest_three.loc[index, "SalesGrowthYoY"]
-                row[margin_key] = latest_three.loc[index, "OpMargin"]
+                row[op_key] = latest_three.loc[index, "OpGrowthYoY"]
             else:
                 row[sales_key] = pd.NA
-                row[margin_key] = pd.NA
+                row[op_key] = pd.NA
 
         row["EquityRatio"] = latest_three.loc[0, "EqAR"] if not latest_three.empty else pd.NA
         metrics_rows.append(row)
 
-    return pd.DataFrame(metrics_rows).sort_values("Code").reset_index(drop=True)
+    metrics = pd.DataFrame(metrics_rows)
+    if metrics.empty:
+        return pd.DataFrame(columns=columns)
+    return metrics.loc[:, columns].sort_values("Code").reset_index(drop=True)
 
 
 def pick_first_positive_value(row: pd.Series, columns: tuple[str, ...]) -> float | pd._libs.missing.NAType:
@@ -1110,12 +1081,41 @@ def build_equity_ratio_screening_table(
     min_equity_ratio: float,
 ) -> pd.DataFrame:
     if financial_metrics_df.empty:
-        return pd.DataFrame(columns=financial_metrics_df.columns)
+        return pd.DataFrame(columns=["Code"])
 
-    filtered = financial_metrics_df.copy()
+    filtered = financial_metrics_df.loc[:, ["Code", "EquityRatio"]].copy()
+    filtered["Code"] = filtered["Code"].astype(str)
     filtered["EquityRatio"] = pd.to_numeric(filtered["EquityRatio"], errors="coerce")
     filtered = filtered[filtered["EquityRatio"] >= min_equity_ratio].copy()
-    return filtered.sort_values("Code").reset_index(drop=True)
+    return filtered.loc[:, ["Code"]].sort_values("Code").reset_index(drop=True)
+
+
+def build_sales_growth_screening_table(
+    financial_metrics_df: pd.DataFrame,
+    min_sales_growth_yoy: float,
+) -> pd.DataFrame:
+    if financial_metrics_df.empty:
+        return pd.DataFrame(columns=["Code"])
+
+    filtered = financial_metrics_df.loc[:, ["Code", "SalesGrowthYoYCurrent"]].copy()
+    filtered["Code"] = filtered["Code"].astype(str)
+    filtered["SalesGrowthYoYCurrent"] = pd.to_numeric(filtered["SalesGrowthYoYCurrent"], errors="coerce")
+    filtered = filtered[filtered["SalesGrowthYoYCurrent"] >= min_sales_growth_yoy].copy()
+    return filtered.loc[:, ["Code"]].sort_values("Code").reset_index(drop=True)
+
+
+def build_op_growth_screening_table(
+    financial_metrics_df: pd.DataFrame,
+    min_op_growth_yoy: float,
+) -> pd.DataFrame:
+    if financial_metrics_df.empty:
+        return pd.DataFrame(columns=["Code"])
+
+    filtered = financial_metrics_df.loc[:, ["Code", "OpGrowthYoYCurrent"]].copy()
+    filtered["Code"] = filtered["Code"].astype(str)
+    filtered["OpGrowthYoYCurrent"] = pd.to_numeric(filtered["OpGrowthYoYCurrent"], errors="coerce")
+    filtered = filtered[filtered["OpGrowthYoYCurrent"] >= min_op_growth_yoy].copy()
+    return filtered.loc[:, ["Code"]].sort_values("Code").reset_index(drop=True)
 
 
 def build_pbr_screening_table(
@@ -1136,19 +1136,25 @@ def build_screening_table(
     market_cap_df: pd.DataFrame,
     weekly_df: pd.DataFrame,
     volume_screen_df: pd.DataFrame,
+    financial_metrics_df: pd.DataFrame,
     pbr_screen_df: pd.DataFrame,
+    sales_growth_screen_df: pd.DataFrame,
+    op_growth_screen_df: pd.DataFrame,
     equity_ratio_df: pd.DataFrame,
     trading_date: date,
 ) -> pd.DataFrame:
     merged = market_cap_df.merge(weekly_df, on="Code", how="inner")
     merged = merged.merge(volume_screen_df, on="Code", how="inner")
+    merged = merged.merge(financial_metrics_df, on="Code", how="inner")
     merged = merged.merge(pbr_screen_df, on="Code", how="inner")
+    merged = merged.merge(sales_growth_screen_df, on="Code", how="inner")
+    merged = merged.merge(op_growth_screen_df, on="Code", how="inner")
     merged = merged.merge(equity_ratio_df, on="Code", how="inner")
     merged["BaseDate"] = pd.Timestamp(trading_date)
 
     return merged.sort_values(
-        ["VolumeRatio20", "VolumeRatio50", "MarketCapYen", "Code"],
-        ascending=[False, False, True, True],
+        ["VolumeRatio20", "VolumeRatio50", "SalesGrowthYoYCurrent", "OpGrowthYoYCurrent", "MarketCapYen", "Code"],
+        ascending=[False, False, False, False, True, True],
     ).reset_index(drop=True)
 
 
@@ -1185,9 +1191,9 @@ OUTPUT_COLUMNS = (
     "SalesGrowthYoYCurrent",
     "SalesGrowthYoYPrev1",
     "SalesGrowthYoYPrev2",
-    "OpMarginCurrent",
-    "OpMarginPrev1",
-    "OpMarginPrev2",
+    "OpGrowthYoYCurrent",
+    "OpGrowthYoYPrev1",
+    "OpGrowthYoYPrev2",
     "EquityRatio",
 )
 
@@ -1207,9 +1213,9 @@ OUTPUT_RENAME_MAP = {
     "SalesGrowthYoYCurrent": "当四半期売上成長率(前年同期比)",
     "SalesGrowthYoYPrev1": "一つ前の四半期売上成長率(前年同期比)",
     "SalesGrowthYoYPrev2": "2つ前の四半期売上成長率(前年同期比)",
-    "OpMarginCurrent": "当四半期売上高営業利益率",
-    "OpMarginPrev1": "一つ前の四半期売上高営業利益率",
-    "OpMarginPrev2": "2つ前の四半期売上高営業利益率",
+    "OpGrowthYoYCurrent": "当四半期営業利益成長率(前年同期比)",
+    "OpGrowthYoYPrev1": "一つ前の四半期営業利益成長率(前年同期比)",
+    "OpGrowthYoYPrev2": "2つ前の四半期営業利益成長率(前年同期比)",
     "EquityRatio": "自己資本比率",
 }
 
@@ -1220,6 +1226,8 @@ def sort_output_rows(df: pd.DataFrame) -> pd.DataFrame:
     for column, is_ascending in (
         ("VolumeRatio20", False),
         ("VolumeRatio50", False),
+        ("SalesGrowthYoYCurrent", False),
+        ("OpGrowthYoYCurrent", False),
         ("MarketCapYen", True),
         ("Code", True),
     ):
@@ -1251,9 +1259,9 @@ def build_output_table(df: pd.DataFrame) -> pd.DataFrame:
         "当四半期売上成長率(前年同期比)",
         "一つ前の四半期売上成長率(前年同期比)",
         "2つ前の四半期売上成長率(前年同期比)",
-        "当四半期売上高営業利益率",
-        "一つ前の四半期売上高営業利益率",
-        "2つ前の四半期売上高営業利益率",
+        "当四半期営業利益成長率(前年同期比)",
+        "一つ前の四半期営業利益成長率(前年同期比)",
+        "2つ前の四半期営業利益成長率(前年同期比)",
         "自己資本比率",
     )
     for column in percentage_columns:
@@ -1303,9 +1311,9 @@ def format_output(df: pd.DataFrame, limit: int) -> str:
         "当四半期売上成長率(前年同期比)",
         "一つ前の四半期売上成長率(前年同期比)",
         "2つ前の四半期売上成長率(前年同期比)",
-        "当四半期売上高営業利益率",
-        "一つ前の四半期売上高営業利益率",
-        "2つ前の四半期売上高営業利益率",
+        "当四半期営業利益成長率(前年同期比)",
+        "一つ前の四半期営業利益成長率(前年同期比)",
+        "2つ前の四半期営業利益成長率(前年同期比)",
         "自己資本比率",
     ):
         if column in display.columns:
@@ -1466,7 +1474,7 @@ def run_screening_for_date(
         max_retries=args.max_retries,
     )
     if price_history_df.empty:
-        raise RuntimeError("出来高履歴を取得できませんでした。")
+        raise RuntimeError("株価履歴を取得できませんでした。")
 
     target_codes = set(master_df["Code"].astype(str))
     price_history_df = price_history_df[
@@ -1476,13 +1484,24 @@ def run_screening_for_date(
         price_history_df=price_history_df,
         trading_date=snapshot.trading_date,
     )
-
     weekly_df = build_weekly_close_breakout_table(
         price_history_df=price_history_df,
         trading_date=snapshot.trading_date,
         lookback_weeks=args.weekly_lookback_weeks,
         min_ratio_to_high=DEFAULT_HIGH_PROXIMITY_RATIO,
     )
+    volume_screen_df = build_volume_screening_table(
+        volume_metrics_df=volume_metrics_df,
+        min_volume_ratio=DEFAULT_VOLUME_RATIO_THRESHOLD,
+    )
+
+    market_cap_df = build_market_cap_table(
+        master_df=master_df,
+        prices_df=snapshot.prices,
+        shares_df=shares_df,
+        max_market_cap_yen=max_market_cap_yen,
+    )
+    financial_metrics_df = build_financial_metrics_table(financial_fin_summary_df)
     valuation_df = build_valuation_metrics_table(
         fin_summary_df=financial_fin_summary_df,
         prices_df=snapshot.prices,
@@ -1491,51 +1510,33 @@ def run_screening_for_date(
         valuation_df=valuation_df,
         max_pbr=DEFAULT_MAX_PBR,
     )
+    sales_growth_screen_df = build_sales_growth_screening_table(
+        financial_metrics_df=financial_metrics_df,
+        min_sales_growth_yoy=DEFAULT_MIN_CURRENT_SALES_GROWTH_YOY,
+    )
+    op_growth_screen_df = build_op_growth_screening_table(
+        financial_metrics_df=financial_metrics_df,
+        min_op_growth_yoy=DEFAULT_MIN_CURRENT_OP_GROWTH_YOY,
+    )
+    equity_ratio_df = build_equity_ratio_screening_table(
+        financial_metrics_df=financial_metrics_df,
+        min_equity_ratio=DEFAULT_MIN_EQUITY_RATIO,
+    )
     industry_valuation_df = build_industry_valuation_average_table(
         master_df=master_df,
         valuation_df=valuation_df,
     )
-    if weekly_df.empty:
-        screened = pd.DataFrame()
-        market_cap_df = build_market_cap_table(
-            master_df=master_df,
-            prices_df=snapshot.prices,
-            shares_df=shares_df,
-            max_market_cap_yen=max_market_cap_yen,
-        )
-        financial_metrics_df = build_financial_metrics_table(financial_fin_summary_df)
-        volume_screen_df = build_volume_screening_table(
-            volume_metrics_df=volume_metrics_df,
-            min_volume_ratio=DEFAULT_VOLUME_RATIO_THRESHOLD,
-        )
-        equity_ratio_df = build_equity_ratio_screening_table(
-            financial_metrics_df=financial_metrics_df,
-            min_equity_ratio=DEFAULT_MIN_EQUITY_RATIO,
-        )
-    else:
-        market_cap_df = build_market_cap_table(
-            master_df=master_df,
-            prices_df=snapshot.prices,
-            shares_df=shares_df,
-            max_market_cap_yen=max_market_cap_yen,
-        )
-        financial_metrics_df = build_financial_metrics_table(financial_fin_summary_df)
-        volume_screen_df = build_volume_screening_table(
-            volume_metrics_df=volume_metrics_df,
-            min_volume_ratio=DEFAULT_VOLUME_RATIO_THRESHOLD,
-        )
-        equity_ratio_df = build_equity_ratio_screening_table(
-            financial_metrics_df=financial_metrics_df,
-            min_equity_ratio=DEFAULT_MIN_EQUITY_RATIO,
-        )
-        screened = build_screening_table(
-            market_cap_df=market_cap_df,
-            weekly_df=weekly_df,
-            volume_screen_df=volume_screen_df,
-            pbr_screen_df=pbr_screen_df,
-            equity_ratio_df=equity_ratio_df,
-            trading_date=snapshot.trading_date,
-        )
+    screened = build_screening_table(
+        market_cap_df=market_cap_df,
+        weekly_df=weekly_df,
+        volume_screen_df=volume_screen_df,
+        financial_metrics_df=financial_metrics_df,
+        pbr_screen_df=pbr_screen_df,
+        sales_growth_screen_df=sales_growth_screen_df,
+        op_growth_screen_df=op_growth_screen_df,
+        equity_ratio_df=equity_ratio_df,
+        trading_date=snapshot.trading_date,
+    )
 
     if not valuation_df.empty:
         market_cap_df = market_cap_df.merge(valuation_df, on="Code", how="left")
@@ -1552,6 +1553,8 @@ def run_screening_for_date(
     volume_codes = volume_screen_df["Code"].nunique() if not volume_screen_df.empty else 0
     pbr_codes = pbr_screen_df["Code"].nunique() if not pbr_screen_df.empty else 0
     equity_ratio_codes = equity_ratio_df["Code"].nunique() if not equity_ratio_df.empty else 0
+    sales_growth_codes = sales_growth_screen_df["Code"].nunique() if not sales_growth_screen_df.empty else 0
+    op_growth_codes = op_growth_screen_df["Code"].nunique() if not op_growth_screen_df.empty else 0
     csv_path = build_output_csv_path(
         requested_date=requested_date,
         trading_date=snapshot.trading_date,
@@ -1572,6 +1575,8 @@ def run_screening_for_date(
         volume_codes=volume_codes,
         pbr_codes=pbr_codes,
         equity_ratio_codes=equity_ratio_codes,
+        sales_growth_codes=sales_growth_codes,
+        op_growth_codes=op_growth_codes,
         screened=screened,
         csv_path=csv_path,
     )
@@ -1593,9 +1598,17 @@ def print_screening_run(
     print("補足: ETF / ETN / REIT / 投資法人などは名称ベースで除外")
     print(f"スクリーニング2: 直近終値 > 過去{weekly_lookback_weeks}週高値")
     print("スクリーニング3: 直近出来高÷当日除く20営業日平均 >= 2")
-    print(f"スクリーニング4: 時価総額 {max_market_cap_oku:.1f} 億円以下")
-    print(f"スクリーニング5: PBR {DEFAULT_MAX_PBR:.1f} 倍以下")
+    print(f"スクリーニング4: PBR {DEFAULT_MAX_PBR:.1f} 倍以下")
+    print(f"スクリーニング5: 時価総額 {max_market_cap_oku:.1f} 億円以下")
     print("スクリーニング6: 自己資本比率 20%以上")
+    print(
+        f"スクリーニング7: 直近四半期売上成長率(前年同期比) "
+        f"{DEFAULT_MIN_CURRENT_SALES_GROWTH_YOY * 100:.0f}%以上"
+    )
+    print(
+        f"スクリーニング8: 直近四半期営業利益成長率(前年同期比) "
+        f"{DEFAULT_MIN_CURRENT_OP_GROWTH_YOY * 100:.0f}%以上"
+    )
     print(f"価格基準日: {result.snapshot.trading_date.isoformat()}")
     if result.requested_date != result.snapshot.trading_date:
         print(
@@ -1618,9 +1631,11 @@ def print_screening_run(
     print("件数:")
     print(f"52週高値更新: {result.weekly_codes}")
     print(f"出来高条件(20日): {result.volume_codes}")
-    print(f"時価総額: {result.market_cap_codes}")
     print(f"PBR: {result.pbr_codes}")
+    print(f"時価総額: {result.market_cap_codes}")
     print(f"自己資本比率: {result.equity_ratio_codes}")
+    print(f"直近四半期売上成長率: {result.sales_growth_codes}")
+    print(f"直近四半期営業利益成長率: {result.op_growth_codes}")
     print(f"最終一致: {covered_codes}")
     print(f"CSV出力: {result.csv_path}")
     print()

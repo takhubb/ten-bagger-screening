@@ -16,7 +16,7 @@ try:
     import jquantsapi
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
-        "jquants-api-client が見つかりません。.venv で `pip install jquants-api-client` を実行してください。"
+        "jquants-api-client が見つかりません。`uv sync` を実行してください。"
     ) from exc
 
 

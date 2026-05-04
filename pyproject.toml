@@ -1,0 +1,9 @@
+[project]
+name = "ten-bagger-screening"
+version = "0.1.0"
+description = "Small-cap stock screening tool using the J-Quants API."
+readme = "README.md"
+requires-python = "==3.13.13"
+dependencies = [
+    "jquants-api-client==2.0.1",
+]

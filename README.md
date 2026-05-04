@@ -16,37 +16,31 @@
 
 ## 1. 動作環境
 
-- Python 3.11 以上を推奨
+- Python 3.13.13
+- uv
 - J-Quants API の利用権限
 - `JQUANTS_API_KEY`
 
-依存パッケージは以下です。
-
-```txt
-jquants-api-client==2.0.1
-```
+Python バージョンは `.python-version` と `pyproject.toml` で 3.13.13 に揃えています。
+依存関係は `pyproject.toml` / `uv.lock` を正とし、旧来の依存ファイルは置いていません。
 
 ## 2. 初回セットアップ
 
 ### 2-1. 仮想環境を作成する
 
 ```bash
-python3 -m venv .venv
+uv venv --python 3.13.13
 ```
 
-### 2-2. 仮想環境を有効化する
+### 2-2. 依存パッケージを同期する
 
 ```bash
-source .venv/bin/activate
+uv sync --frozen
 ```
 
-### 2-3. 依存パッケージをインストールする
+`uv sync` は uv 管理の `.venv` を使います。通常、手動で仮想環境を有効化する必要はありません。
 
-```bash
-pip install -r requirements.txt
-```
-
-### 2-4. `.env` に API キーを設定する
+### 2-3. `.env` に API キーを設定する
 
 `.env` ファイルに以下のように設定します。
 
@@ -61,7 +55,7 @@ JQUANTS_API_KEY=あなたのAPIキー
 何も日付を指定せずに実行すると、その日の日時点で使える最新営業日を基準にスクリーニングします。
 
 ```bash
-./.venv/bin/python screen_small_caps.py
+uv run python screen_small_caps.py
 ```
 
 ## 4. 日付を指定して実行する方法
@@ -71,7 +65,7 @@ JQUANTS_API_KEY=あなたのAPIキー
 ### 4-1. 1日だけ指定する
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-07
+uv run python screen_small_caps.py --date 2026-04-07
 ```
 
 ### 4-2. 複数日を指定する
@@ -79,13 +73,13 @@ JQUANTS_API_KEY=あなたのAPIキー
 `--date` を複数回書けます。
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-03 --date 2026-04-07 --date 2026-04-08
+uv run python screen_small_caps.py --date 2026-04-03 --date 2026-04-07 --date 2026-04-08
 ```
 
 ### 4-3. カンマ区切りで複数日を指定する
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-03,2026-04-07,2026-04-08
+uv run python screen_small_caps.py --date 2026-04-03,2026-04-07,2026-04-08
 ```
 
 ### 4-4. 期間を指定する
@@ -93,7 +87,7 @@ JQUANTS_API_KEY=あなたのAPIキー
 開始日から終了日までを 1 日ずつ順番に実行します。非営業日は自動でスキップされます。
 
 ```bash
-./.venv/bin/python screen_small_caps.py --from-date 2026-04-01 --to-date 2026-04-05
+uv run python screen_small_caps.py --from-date 2026-04-01 --to-date 2026-04-05
 ```
 
 ### 4-5. 個別日付と期間指定を組み合わせる
@@ -102,7 +96,7 @@ JQUANTS_API_KEY=あなたのAPIキー
 重複した日付は自動でまとめられます。
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-10 --from-date 2026-04-01 --to-date 2026-04-05
+uv run python screen_small_caps.py --date 2026-04-10 --from-date 2026-04-01 --to-date 2026-04-05
 ```
 
 ## 5. 非営業日の扱い
@@ -123,37 +117,37 @@ JQUANTS_API_KEY=あなたのAPIキー
 ### 最新営業日で実行
 
 ```bash
-./.venv/bin/python screen_small_caps.py
+uv run python screen_small_caps.py
 ```
 
 ### 2026-04-07 時点で実行
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-07
+uv run python screen_small_caps.py --date 2026-04-07
 ```
 
 ### 2026-04-01 から 2026-04-10 までまとめて実行
 
 ```bash
-./.venv/bin/python screen_small_caps.py --from-date 2026-04-01 --to-date 2026-04-10
+uv run python screen_small_caps.py --from-date 2026-04-01 --to-date 2026-04-10
 ```
 
 ### 3営業日分を個別指定して実行
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-03 --date 2026-04-07 --date 2026-04-08
+uv run python screen_small_caps.py --date 2026-04-03 --date 2026-04-07 --date 2026-04-08
 ```
 
 ### 表示件数を 50 件に増やして実行
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-07 --limit 50
+uv run python screen_small_caps.py --date 2026-04-07 --limit 50
 ```
 
 ### 時価総額上限を 300 億円に変更して実行
 
 ```bash
-./.venv/bin/python screen_small_caps.py --date 2026-04-07 --max-market-cap-oku 300
+uv run python screen_small_caps.py --date 2026-04-07 --max-market-cap-oku 300
 ```
 
 ## 7. 出力内容
@@ -216,7 +210,7 @@ output/20260407_stocks.csv
 ヘルプを確認したい場合:
 
 ```bash
-./.venv/bin/python screen_small_caps.py --help
+uv run python screen_small_caps.py --help
 ```
 
 ## 9. エラーになったときの確認ポイント
@@ -228,11 +222,10 @@ output/20260407_stocks.csv
 
 ### パッケージが見つからない
 
-依存パッケージを再インストールしてください。
+依存パッケージを同期してください。
 
 ```bash
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync --frozen
 ```
 
 ### レート制限にかかった
@@ -242,37 +235,34 @@ pip install -r requirements.txt
 例:
 
 ```bash
-./.venv/bin/python screen_small_caps.py --from-date 2026-04-01 --to-date 2026-04-03
+uv run python screen_small_caps.py --from-date 2026-04-27 --to-date 2026-05-01
 ```
 
 その後、続きの期間を実行します。
 
 ```bash
-./.venv/bin/python screen_small_caps.py --from-date 2026-04-04 --to-date 2026-04-06
+uv run python screen_small_caps.py --from-date 2026-04-04 --to-date 2026-04-06
 ```
 
 ## 10. 補足
 
 - `.cache/` にキャッシュが作成されます
 - `output/` に CSV が出力されます
-- `.env`、`.cache/`、`output/` は Git 管理対象外です
+- `.env`、`.venv/`、`.cache/`、`output/` は Git 管理対象外です
 
 ## 11. 最短手順まとめ
 
-初回セットアップから実行までを最短でやる場合は、以下を順番にコピペすれば動かせます。
+初回セットアップから実行までを最短でやる場合は、以下を順番に実行します。
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv venv --python 3.13.13
+uv sync --frozen
 # .env に JQUANTS_API_KEY を設定してから実行
-./.venv/bin/python screen_small_caps.py
+uv run python screen_small_caps.py
 ```
-git init
-pyenv local 3.13.13
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python screen_small_caps.py
 
-./.venv/bin/python screen_small_caps.py --from-date 2026-01-01 --to-date 2026-04-24
+期間指定の例:
+
+```bash
+uv run python screen_small_caps.py --from-date 2026-01-01 --to-date 2026-04-24
+```
